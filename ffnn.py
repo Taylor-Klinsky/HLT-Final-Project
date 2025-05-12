@@ -123,8 +123,9 @@ def create_embedding_matrix(word_to_index, glove_embeddings, embedding_dim):
     return embedding_matrix
 
 def load_data(data):
-    with open(data) as data_f:
+    with open(data, 'r', encoding='utf-8') as data_f:
         unsplit_data = json.load(data_f)
+    return unsplit_data
     data_array = []
     for elt in unsplit_data:
         data_array.append((elt["text"].split(), int(elt["rating"]-1)))
