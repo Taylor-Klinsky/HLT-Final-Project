@@ -122,13 +122,14 @@ def create_embedding_matrix(word_to_index, glove_embeddings, embedding_dim):
             embedding_matrix[index] = torch.randn(embedding_dim) * 0.1  # Gives a random value for out of vocabulary words
     return embedding_matrix
 
+
 def load_data(data):
     with open(data, 'r', encoding='utf-8') as data_f:
         unsplit_data = json.load(data_f)
-    return unsplit_data
+
     data_array = []
     for elt in unsplit_data:
-        data_array.append((elt["text"].split(), int(elt["rating"]-1)))
+        data_array.append((elt["text"].split(), int(elt["rating"])))
     return data_array
 
 if __name__ == "__main__":
@@ -139,18 +140,24 @@ if __name__ == "__main__":
     parser.add_argument("--train_data", required=True, help="Path to training data")
     parser.add_argument("--test_data", required=False, help="Path to test data")
     parser.add_argument("--glove_data", required=True, help="Path to GloVe data")
-    parser.add_argument("--do_train", action='store_true')
     args = parser.parse_args()
+
+    print("Epochs: %d" % args.epochs)
+    print("Hidden layers:", args.hidden_layers)
 
     # Load data
     print("========== Loading data ==========")
     data = load_data(args.train_data)
-    if args.test_data is None:
-        # If the test data is lumped in with the rest of the data, randomize and split it 70/30
-        train_data, test_data = train_test_split(data, test_size=0.3, random_state=42)
-    else:
-        train_data = data
+    if args.test_data is not None:
         test_data = load_data(args.test_data)
+    else:
+        test_data = None
+
+    # Always split validation from training data
+    train_data, val_data = train_test_split(data, test_size=0.2, random_state=42)
+
+    print("Size of train set: %d" % len(train_data))
+    print("Size of test set: %d" % len(test_data))
 
     vocab = make_vocab([doc for doc, _ in train_data])
     vocab, word_to_index, index_to_word = make_indices(vocab)
@@ -158,6 +165,7 @@ if __name__ == "__main__":
     print("========== Vectorizing data ==========")
     train_data = convert_to_index_sequences(train_data, word_to_index)
     test_data = convert_to_index_sequences(test_data, word_to_index)
+    val_data = convert_to_index_sequences(val_data, word_to_index)
 
     glove_embeddings = load_glove_embeddings(args.glove_data, 300)
     embedding_matrix = create_embedding_matrix(word_to_index, glove_embeddings, 300)
@@ -210,26 +218,24 @@ if __name__ == "__main__":
         print("Training accuracy for epoch {}: {}".format(epoch + 1, train_accuracy))
         print("Training time for this epoch: {}".format(time.time() - start_time))
 
-        # Then, the input data was split into training and validation, so run validation loop
-        if args.test_data is None:
-            # Validation loop
-            last_validation_accuracy = validation_accuracy
-            model.eval()
-            correct = 0
-            total = 0
-            with torch.no_grad():
-                for input_indices, gold_label in test_data:
-                    input_tensor = torch.tensor(input_indices, dtype=torch.long)
-                    predicted = model(input_tensor)
-                    predicted_label = round(predicted.item())
-                    predicted_label = max(0, min(4, predicted_label))
-                    correct += int(predicted_label == gold_label)
-                    total += 1
+        # Validation loop
+        last_validation_accuracy = validation_accuracy
+        model.eval()
+        correct = 0
+        total = 0
+        with torch.no_grad():
+            for input_indices, gold_label in val_data:
+                input_tensor = torch.tensor(input_indices, dtype=torch.long)
+                predicted = model(input_tensor)
+                predicted_label = round(predicted.item())
+                predicted_label = max(0, min(4, predicted_label))
+                correct += int(predicted_label == gold_label)
+                total += 1
 
-            validation_accuracy = correct / total
-            print("Validation completed for epoch {}".format(epoch + 1))
-            print("Validation accuracy for epoch {}: {}".format(epoch + 1, validation_accuracy))
-            print("Validation time for this epoch: {}".format(time.time() - start_time))
+        validation_accuracy = correct / total
+        print("Validation completed for epoch {}".format(epoch + 1))
+        print("Validation accuracy for epoch {}: {}".format(epoch + 1, validation_accuracy))
+        print("Validation time for this epoch: {}".format(time.time() - start_time))
 
         if epoch > 0 and validation_accuracy < last_validation_accuracy and train_accuracy > last_train_accuracy:
             stopping_condition=True
