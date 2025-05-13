@@ -169,7 +169,7 @@ if __name__ == "__main__":
     glove_embeddings = load_glove_embeddings(args.glove_data, 300)
     embedding_matrix = create_embedding_matrix(word_to_index, glove_embeddings, 300)
     model = FFNN(vocab_size=len(vocab), embedding_matrix=embedding_matrix, hidden_dims=args.hidden_layers)
-    optimizer = optim.SGD(model.parameters(), lr=0.001, momentum=0.9)
+    optimizer = optim.SGD(model.parameters(), lr=0.0001, momentum=0.9)
 
     print("========== Training for {} epochs ==========".format(args.epochs))
     stopping_condition = False
