@@ -21,40 +21,39 @@ unk = '<UNK>'  # Unknown word token
 
 class FFNN(nn.Module):
     def __init__(self, vocab_size, embedding_matrix, hidden_dims):
-        """
-        :param vocab_size: Size of the vocabulary
-        :param embedding_matrix:
-        :param hidden_dims: List of integers, each defining size of hidden layer
-        """
         super(FFNN, self).__init__()
-        self.embedding = nn.Embedding.from_pretrained(embedding_matrix, freeze=True) # Word embeddings, don't update
+        self.embedding = nn.Embedding.from_pretrained(embedding_matrix, freeze=True)
         embedding_dim = embedding_matrix.shape[1]
-        self.hidden_layers = nn.ModuleList()  # Makes the number of hidden layers adjustable
-        self.loss = nn.MSELoss()
+        self.hidden_layers = nn.ModuleList()
+        self.activation = nn.ReLU()
 
-        # Iterate through the hidden layers
         prev_dim = embedding_dim
         for hidden_dim in hidden_dims:
             self.hidden_layers.append(nn.Linear(prev_dim, hidden_dim))
             prev_dim = hidden_dim
 
-        self.output_layer = nn.Linear(prev_dim, 1)  # Output is a scalar
-        self.activation = nn.ReLU()  # Rectified linear unit
-
-    def compute_loss(self, pred, target):
-        return self.loss(pred, target.float())
+        # Output 4 logits for 5 ordered classes (1–5)
+        self.output_layer = nn.Linear(prev_dim, 4)
 
     def forward(self, input_indices):
-        """
-        :param input_indices: 1D tensor of word indices
-        :return: 1D vector of rating predictions
-        """
         embeddings = self.embedding(input_indices)
         doc_embedding = torch.mean(embeddings, dim=0)
         x = doc_embedding
         for layer in self.hidden_layers:
             x = self.activation(layer(x))
-        return self.output_layer(x).squeeze()  # Changes the shape to a scalar
+        logits = self.output_layer(x)
+        return logits
+
+    def coral_loss(self, logits, encoded_target):
+        sigmoid = torch.sigmoid(logits)
+        loss_fn = nn.BCELoss()
+        return loss_fn(sigmoid, encoded_target)
+
+def encode_labels(y, num_classes=5):
+    """Encode label as a vector of thresholds (e.g., 2 -> [1, 1, 0, 0])"""
+    encoded = torch.zeros(num_classes - 1)
+    encoded[:y] = 1
+    return encoded
 
 def make_vocab(reviews):
     """
@@ -170,7 +169,7 @@ if __name__ == "__main__":
     glove_embeddings = load_glove_embeddings(args.glove_data, 300)
     embedding_matrix = create_embedding_matrix(word_to_index, glove_embeddings, 300)
     model = FFNN(vocab_size=len(vocab), embedding_matrix=embedding_matrix, hidden_dims=args.hidden_layers)
-    optimizer = optim.SGD(model.parameters(), lr=0.01, momentum=0.9)
+    optimizer = optim.SGD(model.parameters(), lr=0.001, momentum=0.9)
 
     print("========== Training for {} epochs ==========".format(args.epochs))
     stopping_condition = False
@@ -200,14 +199,18 @@ if __name__ == "__main__":
                 input_indices = torch.tensor(train_data[index][0], dtype=torch.long)
                 gold_label = train_data[index][1]
 
-                predicted = model(input_indices)  # Prediction is a scalar
-                predicted_label = round(predicted.item())  # Round for evaluation
-                predicted_label = max(0, min(4, predicted_label))  # Clamp to [0, 4] range
+                logits = model(input_indices)
+                encoded_target = encode_labels(gold_label).to(logits.device)
+                example_loss = model.coral_loss(logits, encoded_target)
+
+                # Convert logits to predicted class
+                predicted_label = int(torch.sum(torch.sigmoid(logits) > 0.5).item())
+                predicted_label = max(0, min(4, predicted_label))  # clamp for safety
 
                 correct += int(predicted_label == gold_label)
                 total += 1
 
-                example_loss = model.compute_loss(predicted, torch.tensor(gold_label, dtype=torch.float))
+                example_loss = model.coral_loss(logits, encoded_target)
                 loss = example_loss if loss is None else loss + example_loss
                 train_accuracy = correct / total
 
@@ -226,9 +229,14 @@ if __name__ == "__main__":
         with torch.no_grad():
             for input_indices, gold_label in val_data:
                 input_tensor = torch.tensor(input_indices, dtype=torch.long)
-                predicted = model(input_tensor)
-                predicted_label = round(predicted.item())
-                predicted_label = max(0, min(4, predicted_label))
+                logits = model(input_tensor)
+                encoded_target = encode_labels(gold_label).to(logits.device)
+                example_loss = model.coral_loss(logits, encoded_target)
+
+                # Convert logits to predicted class
+                predicted_label = int(torch.sum(torch.sigmoid(logits) > 0.5).item())
+                predicted_label = max(0, min(4, predicted_label))  # clamp for safety
+
                 correct += int(predicted_label == gold_label)
                 total += 1
 
@@ -258,9 +266,13 @@ if __name__ == "__main__":
         with torch.no_grad():
             for input_indices, gold_label in test_data:
                 input_tensor = torch.tensor(input_indices, dtype=torch.long)
-                predicted = model(input_tensor)
-                predicted_label = round(predicted.item())
-                predicted_label = max(0, min(4, predicted_label))
+                logits = model(input_tensor)
+                encoded_target = encode_labels(gold_label).to(logits.device)
+                example_loss = model.coral_loss(logits, encoded_target)
+
+                # Convert logits to predicted class
+                predicted_label = int(torch.sum(torch.sigmoid(logits) > 0.5).item())
+                predicted_label = min(max(predicted_label, 0), 4)
 
                 all_preds.append(predicted_label)
                 all_labels.append(gold_label)
@@ -270,7 +282,7 @@ if __name__ == "__main__":
         test_accuracy = correct / total
         print("Test accuracy: {:.2f}".format(test_accuracy))
 
-        cm = confusion_matrix(all_preds, all_labels, labels=[0, 1, 2, 3, 4])
+        cm = confusion_matrix(all_labels, all_preds, labels=[0, 1, 2, 3, 4])
         disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=[1, 2, 3, 4, 5])
         disp.plot(cmap="Blues")
         plt.title("Confusion Matrix")
